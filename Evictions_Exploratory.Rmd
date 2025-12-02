@@ -1,0 +1,61 @@
+---
+title: "Exploratory Analysis -- Eviction Data"
+subtitle: "MUSA 5080 - Fall 2025"
+author: "Alex Stauffer, Xiao Yu, Qianmu Zheng"
+date: "December 1, 2025"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: hide
+    code_download: true
+    self_contained: true
+    df_print: paged
+---
+
+# Intro
+blah blah exploratory analysis
+
+## Load Libraries
+```{r load_library echo = FALSE, warning = FALSE, message=FALSE}
+#Core tidyverse
+library(tidyverse)
+library(lubridate)
+
+# Spatial data
+library(sf)
+library(tigris)
+
+# Census data
+library(tidycensus)
+
+# Weather data
+library(riem)  # For Philadelphia weather from ASOS stations
+
+# Visualization
+library(viridis)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(grid)
+library(gridExtra)
+library(patchwork)
+
+
+# here!
+library(here)
+# Get rid of scientific notation. We gotta look good!
+options(scipen = 999)
+```
+
+
+## Load Initial Eviction Data
+```{r evic_data_loadin echo = FALSE, warning = FALSE, message=FALSE }
+
+```
+
