@@ -56,6 +56,255 @@ options(scipen = 999)
 
 ## Load Initial Eviction Data
 ```{r evic_data_loadin echo = FALSE, warning = FALSE, message=FALSE }
+philly_tract_monthly <- read.csv(here("data/philadelphia_weekly_2020_2021.csv"))
+glimpse(philly_tract_monthly)
+```
+```{r summary}
+summary(philly_tract_monthly %>% select(filings_2020, filings_avg, filings_avg_prepandemic_baseline))
+```
 
+
+
+
+# Cleaning 
+Time to clean data
+
+```{r makedatecolumns cleaning echo = FALSE, warning = FALSE, message=FALSE}
+
+# Parse dates and create year-month variables
+evictions_clean <- philly_tract_monthly %>%
+  mutate(
+    week_date = ymd(week_date),
+    year = year(week_date),
+    month = month(week_date),
+    year_month = floor_date(week_date, "month")  # First day of each month
+  )
+
+# Check for any date parsing issues
+cat("Date parsing check:\n")
+cat("Any NA dates after parsing?", sum(is.na(evictions_clean$week_date)), "\n\n")
+```
+
+## Understanding what we are counting
+```{r explore-columns echo = FALSE, warning = FALSE, message=FALSE}
+# ========== STEP 2: UNDERSTAND FILING COLUMNS ==========
+
+# What are these columns?
+# - filings_2020: Actual filings in 2020 for this week
+# - filings_avg: Average filings for this week across multiple years?
+# - filings_avg_prepandemic_baseline: Pre-pandemic baseline?
+
+# Let's explore:
+evictions_clean %>%
+  group_by(year) %>%
+  summarise(
+    total_filings_2020_col = sum(filings_2020, na.rm = TRUE),
+    total_filings_avg_col = sum(filings_avg, na.rm = TRUE),
+    n_weeks = n_distinct(week),
+    n_tracts = n_distinct(GEOID)
+  )
+
+# Based on column names, it appears:
+# - filings_2020 = actual count for that week (in 2020??)
+# - We likely want to use filings_2020 as our COUNT variable
+# - The "avg" columns seem to be comparison/baseline metrics
+
+cat("\n========== DECISION: PRIMARY OUTCOME VARIABLE ==========\n")
+cat("Using 'filings_2020' as the count of eviction filings\n")
+cat("This appears to be the actual weekly count per tract\n\n")
+```
+
+```{r week-to-month echo = FALSE, warning = FALSE, message=FALSE}
+# ========== STEP 3: AGGREGATE WEEKLY TO MONTHLY ==========
+
+evictions_monthly <- evictions_clean %>%
+  group_by(GEOID, year_month, year, month, racial_majority) %>%
+  summarise(
+    eviction_filings = sum(filings_2020, na.rm = TRUE),
+    weeks_in_month = n(),  # How many weeks contributed to this month
+    .groups = "drop"
+  )
+
+cat("========== MONTHLY AGGREGATION RESULTS ==========\n")
+cat("Monthly observations:", nrow(evictions_monthly), "\n")
+cat("Unique tracts:", n_distinct(evictions_monthly$GEOID), "\n")
+cat("Time periods:", n_distinct(evictions_monthly$year_month), "\n")
+cat("Date range:", min(evictions_monthly$year_month), "to", max(evictions_monthly$year_month), "\n\n")
+```
+
+```{r}
+# Monthly filings by year
+summary_by_year <- evictions_monthly %>%
+  group_by(year) %>%
+  summarise(
+    total_filings = sum(eviction_filings),
+    mean_filings_per_tract_month = mean(eviction_filings),
+    median_filings = median(eviction_filings),
+    months_observed = n_distinct(year_month),
+    tracts_observed = n_distinct(GEOID)
+  )
+
+print("Eviction filings by year:")
+print(summary_by_year)
+
+
+# Monthly filings over time
+summary_by_month <- evictions_monthly %>%
+  group_by(year) %>%
+  summarise(
+    total_filings = sum(eviction_filings),
+    tracts_with_filings = sum(eviction_filings > 0),
+    mean_filings = mean(eviction_filings)
+  )
+
+print(summary_by_month)
+```
+```{r}
+# ============================================
+# EVICTION DATA CLEANING - CORRECTED VERSION
+# ============================================
+
+library(tidyverse)
+library(lubridate)
+
+# Initialize cleaning log
+cleaning_log <- tibble(
+  step = character(),
+  records_before = numeric(),
+  records_after = numeric(),
+  records_changed = numeric(),
+  notes = character()
+)
+
+# ========== INITIAL STATE ==========
+cat("========== INITIAL DATA STATE ==========\n")
+cat("Total rows:", nrow(philly_tract_monthly), "\n")
+cat("Unique tracts:", n_distinct(philly_tract_monthly$GEOID), "\n")
+cat("Temporal unit: WEEKLY\n")
+cat("Date range:", min(philly_tract_monthly$week_date), "to", 
+    max(philly_tract_monthly$week_date), "\n\n")
+
+# ========== STEP 1: PARSE & RENAME ==========
+evictions_clean <- philly_tract_monthly %>%
+  mutate(
+    week_date = ymd(week_date),
+    year = year(week_date),
+    month = month(week_date),
+    year_month = floor_date(week_date, "month"),
+    # Fix misleading name
+    weekly_filings = filings_2020
+  )
+
+# Check for parsing issues
+date_issues <- sum(is.na(evictions_clean$week_date))
+
+cleaning_log <- cleaning_log %>%
+  add_row(
+    step = "1. Parse dates and rename columns",
+    records_before = nrow(philly_tract_monthly),
+    records_after = nrow(evictions_clean),
+    records_changed = 0,
+    notes = paste0("Column 'filings_2020' is MISLEADING - contains ALL years, not just 2020. ",
+                   "Renamed to 'weekly_filings'. Date parsing issues: ", date_issues)
+  )
+
+# ========== STEP 2: CHECK FOR OUTLIERS/ERRORS ==========
+outlier_threshold <- 50  # Seems unreasonable to have 50+ filings in one week for one tract
+
+outliers <- evictions_clean %>%
+  filter(weekly_filings > outlier_threshold)
+
+cat("========== OUTLIER CHECK ==========\n")
+cat("Weeks with >", outlier_threshold, "filings in a single tract:", nrow(outliers), "\n")
+if(nrow(outliers) > 0) {
+  print(outliers %>% 
+          select(GEOID, week_date, weekly_filings, racial_majority) %>%
+          arrange(desc(weekly_filings)))
+}
+
+# DECISION POINT: Investigate these - are they data errors?
+cat("\nDECISION NEEDED: Investigate extreme values above\n")
+cat("Options: (1) Keep as-is, (2) Cap at threshold, (3) Remove as errors\n\n")
+
+# For now, flag them but keep
+evictions_clean <- evictions_clean %>%
+  mutate(outlier_flag = weekly_filings > outlier_threshold)
+
+cleaning_log <- cleaning_log %>%
+  add_row(
+    step = "2. Flag outliers",
+    records_before = nrow(evictions_clean),
+    records_after = nrow(evictions_clean),
+    records_changed = 0,
+    notes = paste0("Flagged ", nrow(outliers), " weeks with >", outlier_threshold, 
+                   " filings. Max observed: ", max(evictions_clean$weekly_filings))
+  )
+
+# ========== STEP 3: AGGREGATE TO MONTHLY ==========
+evictions_monthly <- evictions_clean %>%
+  group_by(GEOID, year_month, year, month, racial_majority) %>%
+  summarise(
+    eviction_filings = sum(weekly_filings, na.rm = TRUE),
+    weeks_in_month = n(),
+    has_outlier = any(outlier_flag),  # Track if month contains outlier week
+    .groups = "drop"
+  )
+
+cleaning_log <- cleaning_log %>%
+  add_row(
+    step = "3. Aggregate to monthly",
+    records_before = nrow(evictions_clean),
+    records_after = nrow(evictions_monthly),
+    records_changed = nrow(evictions_clean) - nrow(evictions_monthly),
+    notes = paste0("Aggregated ", nrow(evictions_clean), " weekly observations to ",
+                   nrow(evictions_monthly), " monthly tract observations. ",
+                   "Weeks per month range: ", min(evictions_monthly$weeks_in_month),
+                   "-", max(evictions_monthly$weeks_in_month))
+  )
+
+cat("========== MONTHLY AGGREGATION RESULTS ==========\n")
+cat("Monthly observations:", nrow(evictions_monthly), "\n")
+cat("Unique tracts:", n_distinct(evictions_monthly$GEOID), "\n")
+cat("Time periods:", n_distinct(evictions_monthly$year_month), "\n")
+cat("Date range:", format(min(evictions_monthly$year_month), "%Y-%m-%d"), 
+    "to", format(max(evictions_monthly$year_month), "%Y-%m-%d"), "\n")
+cat("Months with outlier weeks:", sum(evictions_monthly$has_outlier), "\n\n")
+
+# ========== STEP 4: DESCRIPTIVE STATS ==========
+cat("========== MONTHLY FILING STATISTICS ==========\n")
+monthly_summary <- evictions_monthly %>%
+  summarise(
+    mean = mean(eviction_filings),
+    median = median(eviction_filings),
+    sd = sd(eviction_filings),
+    min = min(eviction_filings),
+    max = max(eviction_filings),
+    q25 = quantile(eviction_filings, 0.25),
+    q75 = quantile(eviction_filings, 0.75),
+    pct_zero = mean(eviction_filings == 0) * 100
+  )
+print(monthly_summary)
+
+# By year
+yearly_summary <- evictions_monthly %>%
+  group_by(year) %>%
+  summarise(
+    total_filings = sum(eviction_filings),
+    mean_per_tract_month = mean(eviction_filings),
+    median_per_tract_month = median(eviction_filings),
+    months_observed = n_distinct(year_month),
+    tract_months = n()
+  )
+
+cat("\n========== FILINGS BY YEAR ==========\n")
+print(yearly_summary)
+
+# ========== SAVE OUTPUTS ==========
+write_csv(evictions_monthly, "evictions_monthly_cleaned.csv")
+write_csv(cleaning_log, "eviction_cleaning_log.csv")
+write_csv(yearly_summary, "eviction_yearly_summary.csv")
+
+cat("\n========== CLEANING LOG ==========\n")
+print(cleaning_log)
 ```
 
