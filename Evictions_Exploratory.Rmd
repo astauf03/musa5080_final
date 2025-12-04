@@ -18,6 +18,45 @@ output:
     df_print: paged
 ---
 
+# Define Themes
+```{r}
+plotTheme <- ggplot2::theme(
+  plot.title = ggplot2::element_text(size = 14, face = "bold"),
+  plot.subtitle = ggplot2::element_text(size = 10),
+  plot.caption = ggplot2::element_text(size = 8),
+  axis.text.x = ggplot2::element_text(size = 10, angle = 45, hjust = 1),
+  axis.text.y = ggplot2::element_text(size = 10),
+  axis.title = ggplot2::element_text(size = 11, face = "bold"),
+  panel.background = ggplot2::element_blank(),
+  panel.grid.major = ggplot2::element_line(colour = "#D0D0D0", size = 0.2),
+  panel.grid.minor = ggplot2::element_blank(),
+  axis.ticks = ggplot2::element_blank(),
+  legend.position = "right"
+)
+
+mapTheme <- ggplot2::theme(
+  plot.title = ggplot2::element_text(size = 14, face = "bold"),
+  plot.subtitle = ggplot2::element_text(size = 10),
+  plot.caption = ggplot2::element_text(size = 8),
+  axis.line = ggplot2::element_blank(),
+  axis.text = ggplot2::element_blank(),
+  axis.ticks = ggplot2::element_blank(),
+  axis.title = ggplot2::element_blank(),
+  panel.background = ggplot2::element_blank(),
+  panel.border = ggplot2::element_blank(),
+  panel.grid.major = ggplot2::element_line(colour = 'transparent'),
+  panel.grid.minor = ggplot2::element_blank(),
+  legend.position = "right",
+  plot.margin = ggplot2::margin(1, 1, 1, 1, 'cm'),
+  legend.key.height = grid::unit(1, "cm"),
+  legend.key.width = grid::unit(0.2, "cm")
+)
+
+palette5 <- c("#eff3ff", "#E1DCF5", "#BBADF0", "#6849BA", "#361AA3")
+```
+
+
+
 # Intro
 blah blah exploratory analysis
 
@@ -45,6 +84,7 @@ library(kableExtra)
 library(grid)
 library(gridExtra)
 library(patchwork)
+library(tmap)
 
 
 # here!
@@ -53,258 +93,323 @@ library(here)
 options(scipen = 999)
 ```
 
+# Get Geography! 
+```{r}
+tracts <- tracts("PA", "Philadelphia", year = 2022, class = "sf") %>%
+  st_transform(2272)
+```
 
-## Load Initial Eviction Data
+
+
+
+
+
+
+
+# ========== STEP 1: LOAD & FILTER BY QUARTER ==========
 ```{r evic_data_loadin echo = FALSE, warning = FALSE, message=FALSE }
-philly_tract_monthly <- read.csv(here("data/philadelphia_weekly_2020_2021.csv"))
+evictions_raw <- read.csv(here("data/philadelphia_weekly_2020_2021.csv"))
 glimpse(philly_tract_monthly)
 ```
-```{r summary}
-summary(philly_tract_monthly %>% select(filings_2020, filings_avg, filings_avg_prepandemic_baseline))
-```
-
-
-
-
-# Cleaning 
-Time to clean data
-
-```{r makedatecolumns cleaning echo = FALSE, warning = FALSE, message=FALSE}
-
-# Parse dates and create year-month variables
-evictions_clean <- philly_tract_monthly %>%
+```{r parsedates }
+evictions_quarterly <- evictions_raw %>%
   mutate(
     week_date = ymd(week_date),
-    year = year(week_date),
-    month = month(week_date),
-    year_month = floor_date(week_date, "month")  # First day of each month
+    year = year (week_date),
+    quarter = quarter(week_date),
+    year_quarter = paste0(year, "-Q", quarter)
+  ) %>%
+  # aggregate to quarterly by tract 
+  group_by(GEOID, year_quarter, year, quarter, racial_majority, filings_avg,filings_avg_prepandemic_baseline, filings_2020) %>%
+  summarize(
+    eviction_filings = sum(filings_2020, na.rm = TRUE),
+    weeks_in_quarter = n(),
+    .groups = "drop"
   )
 
-# Check for any date parsing issues
-cat("Date parsing check:\n")
+cat("Quarterly data created:\n")
+cat("Rows:", nrow(evictions_quarterly), "\n")
+cat("Unique tracts:", n_distinct(evictions_quarterly$GEOID), "\n")
+cat("Time periods:", paste(unique(evictions_quarterly$year_quarter), collapse = ", "), "\n\n")
 cat("Any NA dates after parsing?", sum(is.na(evictions_clean$week_date)), "\n\n")
 ```
-
-## Understanding what we are counting
-```{r explore-columns echo = FALSE, warning = FALSE, message=FALSE}
-# ========== STEP 2: UNDERSTAND FILING COLUMNS ==========
-
-# What are these columns?
-# - filings_2020: Actual filings in 2020 for this week
-# - filings_avg: Average filings for this week across multiple years?
-# - filings_avg_prepandemic_baseline: Pre-pandemic baseline?
-
-# Let's explore:
-evictions_clean %>%
-  group_by(year) %>%
-  summarise(
-    total_filings_2020_col = sum(filings_2020, na.rm = TRUE),
-    total_filings_avg_col = sum(filings_avg, na.rm = TRUE),
-    n_weeks = n_distinct(week),
-    n_tracts = n_distinct(GEOID)
-  )
-
-# Based on column names, it appears:
-# - filings_2020 = actual count for that week (in 2020??)
-# - We likely want to use filings_2020 as our COUNT variable
-# - The "avg" columns seem to be comparison/baseline metrics
-
-cat("\n========== DECISION: PRIMARY OUTCOME VARIABLE ==========\n")
-cat("Using 'filings_2020' as the count of eviction filings\n")
-cat("This appears to be the actual weekly count per tract\n\n")
-```
-
-```{r week-to-month echo = FALSE, warning = FALSE, message=FALSE}
-# ========== STEP 3: AGGREGATE WEEKLY TO MONTHLY ==========
-
-evictions_monthly <- evictions_clean %>%
-  group_by(GEOID, year_month, year, month, racial_majority) %>%
-  summarise(
-    eviction_filings = sum(filings_2020, na.rm = TRUE),
-    weeks_in_month = n(),  # How many weeks contributed to this month
-    .groups = "drop"
-  )
-
-cat("========== MONTHLY AGGREGATION RESULTS ==========\n")
-cat("Monthly observations:", nrow(evictions_monthly), "\n")
-cat("Unique tracts:", n_distinct(evictions_monthly$GEOID), "\n")
-cat("Time periods:", n_distinct(evictions_monthly$year_month), "\n")
-cat("Date range:", min(evictions_monthly$year_month), "to", max(evictions_monthly$year_month), "\n\n")
-```
-
-```{r}
-# Monthly filings by year
-summary_by_year <- evictions_monthly %>%
-  group_by(year) %>%
-  summarise(
-    total_filings = sum(eviction_filings),
-    mean_filings_per_tract_month = mean(eviction_filings),
-    median_filings = median(eviction_filings),
-    months_observed = n_distinct(year_month),
-    tracts_observed = n_distinct(GEOID)
-  )
-
-print("Eviction filings by year:")
-print(summary_by_year)
-
-
-# Monthly filings over time
-summary_by_month <- evictions_monthly %>%
-  group_by(year) %>%
-  summarise(
-    total_filings = sum(eviction_filings),
-    tracts_with_filings = sum(eviction_filings > 0),
-    mean_filings = mean(eviction_filings)
-  )
-
-print(summary_by_month)
-```
-```{r}
-# ============================================
-# EVICTION DATA CLEANING - CORRECTED VERSION
-# ============================================
-
-library(tidyverse)
-library(lubridate)
-
-# Initialize cleaning log
-cleaning_log <- tibble(
-  step = character(),
-  records_before = numeric(),
-  records_after = numeric(),
-  records_changed = numeric(),
-  notes = character()
-)
-
-# ========== INITIAL STATE ==========
-cat("========== INITIAL DATA STATE ==========\n")
-cat("Total rows:", nrow(philly_tract_monthly), "\n")
-cat("Unique tracts:", n_distinct(philly_tract_monthly$GEOID), "\n")
-cat("Temporal unit: WEEKLY\n")
-cat("Date range:", min(philly_tract_monthly$week_date), "to", 
-    max(philly_tract_monthly$week_date), "\n\n")
-
-# ========== STEP 1: PARSE & RENAME ==========
-evictions_clean <- philly_tract_monthly %>%
+# Step 2: Create Lag Vars
+```{r lagvars}
+evictions_with_lags <- evictions_quarterly %>%
+  arrange(GEOID, year_quarter) %>%
+  group_by(GEOID) %>%
   mutate(
-    week_date = ymd(week_date),
-    year = year(week_date),
-    month = month(week_date),
-    year_month = floor_date(week_date, "month"),
-    # Fix misleading name
-    weekly_filings = filings_2020
-  )
+    # Lag variables (quarters ago)
+    evictions_lag1 = lag(eviction_filings, 1),   # 1 quarter ago
+    evictions_lag2 = lag(eviction_filings, 2),   # 2 quarters ago  
+    evictions_lag4 = lag(eviction_filings, 4),   # 1 year ago
+    
+    # Rolling averages
+    evictions_avg_2q = zoo::rollmean(eviction_filings, k = 2, fill = NA, align = "right"),
+    evictions_avg_4q = zoo::rollmean(eviction_filings, k = 4, fill = NA, align = "right")
+  ) %>%
+  ungroup()
 
-# Check for parsing issues
-date_issues <- sum(is.na(evictions_clean$week_date))
+# Check lag creation
+cat("========== LAG VARIABLES CHECK ==========\n")
+cat("Rows with complete lags (lag1):", sum(!is.na(evictions_with_lags$evictions_lag1)), "\n")
+cat("Rows with complete 4-quarter lags:", sum(!is.na(evictions_with_lags$evictions_lag4)), "\n\n")
+```
 
-cleaning_log <- cleaning_log %>%
-  add_row(
-    step = "1. Parse dates and rename columns",
-    records_before = nrow(philly_tract_monthly),
-    records_after = nrow(evictions_clean),
-    records_changed = 0,
-    notes = paste0("Column 'filings_2020' is MISLEADING - contains ALL years, not just 2020. ",
-                   "Renamed to 'weekly_filings'. Date parsing issues: ", date_issues)
-  )
+# Visualization
 
-# ========== STEP 2: CHECK FOR OUTLIERS/ERRORS ==========
-outlier_threshold <- 50  # Seems unreasonable to have 50+ filings in one week for one tract
+```{r boxplot_evics}
 
-outliers <- evictions_clean %>%
-  filter(weekly_filings > outlier_threshold)
 
-cat("========== OUTLIER CHECK ==========\n")
-cat("Weeks with >", outlier_threshold, "filings in a single tract:", nrow(outliers), "\n")
-if(nrow(outliers) > 0) {
-  print(outliers %>% 
-          select(GEOID, week_date, weekly_filings, racial_majority) %>%
-          arrange(desc(weekly_filings)))
-}
+evictions_with_lags %>%
+  mutate(year = substr(year_quarter, 1, 4)) %>%
+  ggplot(aes(x = year, y = eviction_filings)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Distribution of Quarterly Evictions per Tract (by Year)",
+    x = "Year",
+    y = "Quarterly Eviction Filings"
+  ) +
+  theme_minimal()
 
-# DECISION POINT: Investigate these - are they data errors?
-cat("\nDECISION NEEDED: Investigate extreme values above\n")
-cat("Options: (1) Keep as-is, (2) Cap at threshold, (3) Remove as errors\n\n")
+```
 
-# For now, flag them but keep
-evictions_clean <- evictions_clean %>%
-  mutate(outlier_flag = weekly_filings > outlier_threshold)
 
-cleaning_log <- cleaning_log %>%
-  add_row(
-    step = "2. Flag outliers",
-    records_before = nrow(evictions_clean),
-    records_after = nrow(evictions_clean),
-    records_changed = 0,
-    notes = paste0("Flagged ", nrow(outliers), " weeks with >", outlier_threshold, 
-                   " filings. Max observed: ", max(evictions_clean$weekly_filings))
-  )
 
-# ========== STEP 3: AGGREGATE TO MONTHLY ==========
-evictions_monthly <- evictions_clean %>%
-  group_by(GEOID, year_month, year, month, racial_majority) %>%
+```{r citywide vis}
+evictions_with_lags %>%
+  group_by(year_quarter) %>%
+  summarise(total_evictions = sum(eviction_filings)) %>%
+  ggplot(aes(x = year_quarter, y = total_evictions, group = 1)) +
+  geom_line(color = "firebrick", size = 1) +
+  geom_point() +
+  labs(
+    title = "Citywide Quarterly Eviction Filings Over Time",
+    x = "Quarter",
+    y = "Total Filings"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+```{r}
+evictions_with_lags %>%
+  group_by(year_quarter) %>%
   summarise(
-    eviction_filings = sum(weekly_filings, na.rm = TRUE),
-    weeks_in_month = n(),
-    has_outlier = any(outlier_flag),  # Track if month contains outlier week
-    .groups = "drop"
+    avg_2q = mean(evictions_avg_2q, na.rm = TRUE),
+    avg_4q = mean(evictions_avg_4q, na.rm = TRUE)
+  ) %>%
+  ggplot(aes(x = year_quarter, group = 1)) +
+  geom_line(aes(y = avg_2q, color = "2-Quarter Rolling Avg"), size = 1) +
+  geom_line(aes(y = avg_4q, color = "4-Quarter Rolling Avg"), size = 1) +
+  labs(
+    title = "Smoothed Quarterly Eviction Filings Across Philadelphia",
+    x = "Quarter",
+    y = "Rolling Average Eviction Filings",
+    color = "Legend"
+  ) +
+  scale_color_manual(values = c("2-Quarter Rolling Avg" = "blue", 
+                                "4-Quarter Rolling Avg" = "orange")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+## join tracts and evictiondata 
+```{r join}
+ev_map <- tracts %>%
+  left_join(evictions_quarterly, by = c("GEOID"))
+```
+
+
+## Average Quarterly Evictions 
+```{r}
+ev_mean <- evictions_quarterly %>%
+  group_by(GEOID) %>%
+  summarise(mean_quarterly = mean(eviction_filings, na.rm = TRUE))
+
+ev_mean_map <- tracts %>%
+  left_join(ev_mean, by = "GEOID")
+
+ggplot(ev_mean_map) +
+  geom_sf(aes(fill = mean_quarterly), color = NA) +
+  scale_fill_viridis_c(option = "magma", direction = -1, name = "Mean\nQuarterly\nEvictions", na.value = "grey90") +
+  labs(title = "Average Quarterly Eviction Filings by Census Tract") +
+  mapTheme
+
+```
+
+Analysis here.
+
+
+## Quarterly Facets Map
+```{r}
+ev_quarter_map <- tracts %>%
+  left_join(evictions_quarterly, by = "GEOID")
+
+ggplot(ev_quarter_map) +
+  geom_sf(aes(fill = eviction_filings), color = NA) +
+  scale_fill_viridis_c(option = "magma", direction = -1, name = "Evictions", na.value = "grey90") +
+  facet_wrap(~ year_quarter) +
+  labs(title = "Quarterly Eviction Filings by Tract",
+       subtitle = "Philadelphia Census Tracts") +
+  mapTheme +
+  theme(strip.text = element_text(size = 9))
+
+```
+THIS NEEDS CHANGED 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r zoning}
+zoning_sf <- st_read(here("data/Zoning_BaseDistricts.shp")) %>%
+  st_transform(2272)
+
+glimpse(zoning)
+unique(zoning_sf$zoninggroup)
+unique(zoning_sf$long_code)
+```
+```{r}
+zoning_res <- zoning_sf %>%
+  filter(
+    zoninggrou == "Residential/Residential Mixed-Use" |
+    grepl("^RM", long_code)  |
+    grepl("^RSA", long_code) |
+    grepl("^RMX", long_code) |
+    grepl("^CMX", long_code)
   )
 
-cleaning_log <- cleaning_log %>%
-  add_row(
-    step = "3. Aggregate to monthly",
-    records_before = nrow(evictions_clean),
-    records_after = nrow(evictions_monthly),
-    records_changed = nrow(evictions_clean) - nrow(evictions_monthly),
-    notes = paste0("Aggregated ", nrow(evictions_clean), " weekly observations to ",
-                   nrow(evictions_monthly), " monthly tract observations. ",
-                   "Weeks per month range: ", min(evictions_monthly$weeks_in_month),
-                   "-", max(evictions_monthly$weeks_in_month))
+unique(zoning_res$long_code)
+
+
+```
+rename the column "zoninggrou" 
+```{r}
+zoning_res <- zoning_res %>%
+  mutate(
+    res_type = case_when(
+      grepl("^RSA", long_code) ~ "Single-Family",
+      grepl("^RM-", long_code) ~ "Multi-Family",
+      grepl("^RMX", long_code) ~ "Residential Mixed-Use",
+      grepl("^CMX", long_code) ~ "Commercial Mixed-Use",
+      TRUE ~ "Other"
+    )
   )
 
-cat("========== MONTHLY AGGREGATION RESULTS ==========\n")
-cat("Monthly observations:", nrow(evictions_monthly), "\n")
-cat("Unique tracts:", n_distinct(evictions_monthly$GEOID), "\n")
-cat("Time periods:", n_distinct(evictions_monthly$year_month), "\n")
-cat("Date range:", format(min(evictions_monthly$year_month), "%Y-%m-%d"), 
-    "to", format(max(evictions_monthly$year_month), "%Y-%m-%d"), "\n")
-cat("Months with outlier weeks:", sum(evictions_monthly$has_outlier), "\n\n")
+```
 
-# ========== STEP 4: DESCRIPTIVE STATS ==========
-cat("========== MONTHLY FILING STATISTICS ==========\n")
-monthly_summary <- evictions_monthly %>%
+```{r}
+
+
+# Transform CRS
+zoning_res <- st_transform(zoning_res, 2272)
+tracts <- st_transform(tracts, 2272)
+
+# Correct filtering using truncated field name
+zoning_res <- zoning_res %>%
+  filter(
+    zoninggrou == "Residential/Residential Mixed-Use" |
+    grepl("^RM", long_code)  |
+    grepl("^RSA", long_code) |
+    grepl("^RMX", long_code) |
+    grepl("^CMX", long_code)
+  )
+
+# Intersection using correct field
+tract_zoning_intersection <- st_intersection(
+  tracts %>% select(GEOID),
+  zoning_res %>% select(long_code, zoninggrou)
+) %>%
+  mutate(area_res_zone = st_area(geometry))
+
+# Tract areas
+tract_areas <- tracts %>%
+  mutate(area_tract = st_area(geometry)) %>%
+  st_drop_geometry() %>%
+  select(GEOID, area_tract)
+
+# Aggregate
+zoning_by_tract <- tract_zoning_intersection %>%
+  st_drop_geometry() %>%
+  group_by(GEOID) %>%
   summarise(
-    mean = mean(eviction_filings),
-    median = median(eviction_filings),
-    sd = sd(eviction_filings),
-    min = min(eviction_filings),
-    max = max(eviction_filings),
-    q25 = quantile(eviction_filings, 0.25),
-    q75 = quantile(eviction_filings, 0.75),
-    pct_zero = mean(eviction_filings == 0) * 100
-  )
-print(monthly_summary)
+    res_zone_area = sum(as.numeric(area_res_zone), na.rm = TRUE),
+    n_res_zones = n(),
+    n_zone_types = n_distinct(long_code)
+  ) %>%
+  left_join(tract_areas, by = "GEOID") %>%
+  mutate(pct_res_zoned = res_zone_area / area_tract)
 
-# By year
-yearly_summary <- evictions_monthly %>%
-  group_by(year) %>%
-  summarise(
-    total_filings = sum(eviction_filings),
-    mean_per_tract_month = mean(eviction_filings),
-    median_per_tract_month = median(eviction_filings),
-    months_observed = n_distinct(year_month),
-    tract_months = n()
-  )
+```
 
-cat("\n========== FILINGS BY YEAR ==========\n")
-print(yearly_summary)
+```{r}
+evictions_zoned <- evictions_with_lags %>%
+  left_join(zoning_by_tract, by = "GEOID")
 
-# ========== SAVE OUTPUTS ==========
-write_csv(evictions_monthly, "evictions_monthly_cleaned.csv")
-write_csv(cleaning_log, "eviction_cleaning_log.csv")
-write_csv(yearly_summary, "eviction_yearly_summary.csv")
+```
 
-cat("\n========== CLEANING LOG ==========\n")
-print(cleaning_log)
+
+```{r}
+library(units)
+
+ggplot(evictions_zoned, aes(x = pct_res_zoned, y = eviction_filings)) +
+  geom_point(alpha = 0.3, color = "#6849BA") +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  labs(
+    title = "Relationship Between % Residential Zoning and Quarterly Evictions",
+    x = "Percent of Tract Area Zoned Residential/Mixed-Use",
+    y = "Quarterly Eviction Filings"
+  ) +
+  plotTheme
+
+```
+
+```{r}
+ggplot(evictions_zoned, aes(x = pct_res_zoned, y = evictions_lag1)) +
+  geom_point(alpha = 0.3, color = "#361AA3") +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  labs(
+    title = "1-Quarter Lagged Evictions vs. Residential Zoning Share",
+    x = "Residential Zoning Share (0–1 scale)",
+    y = "Lagged Evictions (1 Quarter)"
+  ) +
+  plotTheme
+
+
 ```
 
