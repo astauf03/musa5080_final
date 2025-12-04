@@ -1,4 +1,0 @@
-step,records_before,records_after,records_changed,notes
-1. Parse dates and rename columns,125563,125563,0,"Column 'filings_2020' is MISLEADING - contains ALL years, not just 2020. Renamed to 'weekly_filings'. Date parsing issues: 0"
-2. Flag outliers,125563,125563,0,Flagged 5 weeks with >50 filings. Max observed: 260
-3. Aggregate to monthly,125563,29448,96115,Aggregated 125563 weekly observations to 29448 monthly tract observations. Weeks per month range: 1-5
